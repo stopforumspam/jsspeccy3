@@ -55,12 +55,46 @@ const loadSnapshot = (snapshot) => {
     }
 
     core.setTStates(snapshot.tstates);
+    core.setTapePulseBufferState(0, 0);
+};
+
+const fillTapePulseBuffer = () => {
+    if (tape && tapeIsPlaying) {
+        const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
+        if (tapePulseBufferTstateCount < 80000) {
+            const tapePulseWriteIndex = core.getTapePulseWriteIndex();
+            const [newTapePulseWriteIndex, tstatesGenerated, tapeFinished] = tape.pulseGenerator.emitPulses(
+                tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
+            );
+            core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
+            if (tapeFinished) {
+                tapeIsPlaying = false;
+                postMessage({
+                    message: 'stoppedTape',
+                });
+            }
+        }
+    }
 };
 
 const trapTapeLoad = () => {
     if (!tape) return;
     const block = tape.getNextLoadableBlock();
-    if (!block) return;
+    if (!block) {
+        if (tape.hasMoreBlocks()) {
+            if (!tapeIsPlaying) {
+                tapeIsPlaying = true;
+                postMessage({
+                    message: 'playingTape',
+                });
+            }
+            fillTapePulseBuffer();
+        }
+        return;
+    }
+
+    // Flush any buffered pulses from the block being trapped
+    core.setTapePulseBufferState(0, 0);
 
     /* get expected block type and load vs verify flag from AF' */
     const af_ = registerPairs[4];
@@ -71,46 +105,72 @@ const trapTapeLoad = () => {
     const actualBlockType = block[0];
 
     let success = true;
+    let offset = 1;
+    let loadedBytes = 0;
+    let checksum = actualBlockType;
+    let lastByte = actualBlockType;
+
     if (expectedBlockType != actualBlockType) {
         success = false;
     } else {
-        if (shouldLoad) {
-            let offset = 1;
-            let loadedBytes = 0;
-            let checksum = actualBlockType;
-            while (loadedBytes < requestedLength) {
-                if (offset >= block.length) {
-                    /* have run out of bytes to load */
+        while (loadedBytes < requestedLength) {
+            if (offset >= block.length) {
+                /* have run out of bytes to load */
+                success = false;
+                break;
+            }
+            const byte = block[offset++];
+            lastByte = byte;
+            loadedBytes++;
+            if (shouldLoad) {
+                core.poke(addr, byte);
+            } else {
+                if ((core.peek(addr) ^ byte) !== 0) {
                     success = false;
                     break;
                 }
-                const byte = block[offset++];
-                loadedBytes++;
-                core.poke(addr, byte);
-                addr = (addr + 1) & 0xffff;
-                checksum ^= byte;
             }
-
-            // if loading is going right, we should still have a checksum byte left to read
-            success &= (offset < block.length);
-            if (success) {
-                const expectedChecksum = block[offset];
-                success = (checksum === expectedChecksum);
-            }
-        } else {
-            // VERIFY. TODO: actually verify.
-            success = true;
+            addr = (addr + 1) & 0xffff;
+            checksum ^= byte;
         }
+
+        // if loading is going right, we should still have a checksum byte left to read
+        success = success && (offset < block.length);
+        if (success) {
+            const expectedChecksum = block[offset];
+            lastByte = expectedChecksum;
+            checksum ^= expectedChecksum;
+            success = (checksum === 0);
+        }
+
+        registerPairs[8] = addr;  /* IX */
+        registerPairs[2] = (requestedLength - loadedBytes) & 0xffff;  /* DE */
+        registerPairs[3] = ((checksum & 0xff) << 8) | (lastByte & 0xff);  /* HL */
     }
 
     if (success) {
         /* set carry to indicate success */
-        registerPairs[0] |= 0x0001;
+        registerPairs[0] = 0x0001;
     } else {
         /* reset carry to indicate failure */
         registerPairs[0] &= 0xfffe;
     }
     core.setPC(0x05e2);  /* address at which to exit the tape trap */
+
+    if (tape.hasMoreBlocks()) {
+        if (!tapeIsPlaying) {
+            tapeIsPlaying = true;
+            postMessage({
+                message: 'playingTape',
+            });
+        }
+        fillTapePulseBuffer();
+    } else if (tapeIsPlaying) {
+        tapeIsPlaying = false;
+        postMessage({
+            message: 'stoppedTape',
+        });
+    }
 }
 
 onmessage = (e) => {
@@ -135,20 +195,7 @@ onmessage = (e) => {
                 core.setAudioSamplesPerFrame(0);
             }
 
-            if (tape && tapeIsPlaying) {
-                const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
-                const tapePulseWriteIndex = core.getTapePulseWriteIndex();
-                const [newTapePulseWriteIndex, tstatesGenerated, tapeFinished] = tape.pulseGenerator.emitPulses(
-                    tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
-                );
-                core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
-                if (tapeFinished) {
-                    tapeIsPlaying = false;
-                    postMessage({
-                        message: 'stoppedTape',
-                    });
-                }
-            }
+            fillTapePulseBuffer();
 
             let status = core.runFrame();
             while (status) {
@@ -214,7 +261,13 @@ onmessage = (e) => {
             break;
         case 'openTAPFile':
             tape = new TAPFile(e.data.data);
-            tapeIsPlaying = false;
+            core.setTapePulseBufferState(0, 0);
+            if (tapeIsPlaying) {
+                tapeIsPlaying = false;
+                postMessage({
+                    message: 'stoppedTape',
+                });
+            }
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
@@ -223,7 +276,13 @@ onmessage = (e) => {
             break;
         case 'openTZXFile':
             tape = new TZXFile(e.data.data);
-            tapeIsPlaying = false;
+            core.setTapePulseBufferState(0, 0);
+            if (tapeIsPlaying) {
+                tapeIsPlaying = false;
+                postMessage({
+                    message: 'stoppedTape',
+                });
+            }
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
