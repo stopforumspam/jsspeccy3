@@ -931,7 +931,7 @@ export class TZXFile {
                 this.currentBlock = null;
                 this.pulseGenerator.reset();
                 if (block.pause) {
-                    this.pulseGenerator.addSegment(new PauseSegment(Math.min(block.pause, 1500)));
+                    this.pulseGenerator.addSegment(new PauseSegment(block.pause));
                 }
                 return block.data;
             } else {
@@ -972,7 +972,7 @@ export class TZXFile {
                 this.currentBlock = null;
                 this.pulseGenerator.reset();
                 if (block.pause) {
-                    this.pulseGenerator.addSegment(new PauseSegment(Math.min(block.pause, 1500)));
+                    this.pulseGenerator.addSegment(new PauseSegment(block.pause));
                 }
                 return block.data;
             }
