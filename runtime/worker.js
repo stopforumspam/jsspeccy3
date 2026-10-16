@@ -11,6 +11,7 @@ let tapePulses = null;
 let stopped = false;
 let tape = null;
 let tapeIsPlaying = false;
+let machineType = 48;
 
 const loadCore = (baseUrl) => {
     WebAssembly.instantiateStreaming(
@@ -34,6 +35,7 @@ const loadMemoryPage = (page, data) => {
 };
 
 const loadSnapshot = (snapshot) => {
+    machineType = snapshot.model;
     core.setMachineType(snapshot.model);
     for (let page in snapshot.memoryPages) {
         loadMemoryPage(page, snapshot.memoryPages[page]);
@@ -60,6 +62,7 @@ const loadSnapshot = (snapshot) => {
 
 const fillTapePulseBuffer = () => {
     if (tape && tapeIsPlaying) {
+        tape.is48K = (machineType == 48);
         const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
         if (tapePulseBufferTstateCount < 80000) {
             const tapePulseWriteIndex = core.getTapePulseWriteIndex();
@@ -79,9 +82,10 @@ const fillTapePulseBuffer = () => {
 
 const trapTapeLoad = () => {
     if (!tape) return;
+    tape.is48K = (machineType == 48);
     const block = tape.getNextLoadableBlock();
     if (!block) {
-        if (tape.hasMoreBlocks()) {
+        if (!tape.stopRequested && tape.hasMoreBlocks()) {
             if (!tapeIsPlaying) {
                 tapeIsPlaying = true;
                 postMessage({
@@ -243,6 +247,7 @@ onmessage = (e) => {
             core.keyUp(e.data.row, e.data.mask);
             break;
         case 'setMachineType':
+            machineType = e.data.type;
             core.setMachineType(e.data.type);
             break;
         case 'reset':

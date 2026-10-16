@@ -833,6 +833,16 @@ export class TZXFile {
                 this.currentBlock = null;
                 return false;
             }
+            if (block.type === 'Pause' && block.pause === 0) {
+                /* pause of 0 means stop the tape; playing again resumes at the following block */
+                this.currentBlock = null;
+                return false;
+            }
+            if (block.type === 'StopTape48K') {
+                this.currentBlock = null;
+                /* in 48K mode, end playback here; playing again resumes at the following block */
+                return !this.is48K;
+            }
             this.currentBlock = block;
             block.generatePulses(generator);
             return true;
@@ -858,6 +868,7 @@ export class TZXFile {
                 case 'GeneralizedData':
                 case 'Pause':
                 case 'SetSignalLevel':
+                case 'StopTape48K':
                     /* found a meaningful block */
                     this.nextBlockIndex++;
                     return block;
@@ -907,6 +918,7 @@ export class TZXFile {
     }
 
     getNextLoadableBlock() {
+        this.stopRequested = false;
         if (this.currentBlock && this.pulseGenerator.hasActiveData()) {
             if (this.currentBlock.type === 'Pause' || this.currentBlock.type === 'SetSignalLevel') {
                 if (this.currentBlock.type === 'SetSignalLevel') {
@@ -935,6 +947,21 @@ export class TZXFile {
 
             const block = this.getNextMeaningfulBlock(true);
             if (!block) return null;
+            if (block.type === 'StopTape48K') {
+                if (this.is48K) {
+                    this.currentBlock = null;
+                    this.pulseGenerator.reset();
+                    this.stopRequested = true;
+                    return null;
+                }
+                continue;
+            }
+            if (block.type === 'Pause' && block.pause === 0) {
+                this.currentBlock = null;
+                this.pulseGenerator.reset();
+                this.stopRequested = true;
+                return null;
+            }
             if (block.type === 'Pause' || block.type === 'SetSignalLevel') {
                 if (block.type === 'SetSignalLevel') {
                     this.pulseGenerator.level = Boolean(block.level);
