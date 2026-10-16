@@ -374,6 +374,7 @@ export class TAPFile {
         }
         this.currentBlock = null;
         this.pulseGenerator.reset();
+        this.pulseGenerator.addSegment(new PauseSegment(1000));
         return block;
     }
 
@@ -902,21 +903,28 @@ export class TZXFile {
         if (block.type === 'StandardSpeedData') {
             return block.data && block.data.length >= 2;
         }
-        if (block.type === 'TurboSpeedData') {
-            return block.lastByteMask === 8 && block.data && block.data.length >= 2;
-        }
         return false;
     }
 
     getNextLoadableBlock() {
         if (this.currentBlock && this.pulseGenerator.hasActiveData()) {
-            if (this.isBlockTrappable(this.currentBlock)) {
-                const data = this.currentBlock.data;
+            if (this.currentBlock.type === 'Pause' || this.currentBlock.type === 'SetSignalLevel') {
+                if (this.currentBlock.type === 'SetSignalLevel') {
+                    this.pulseGenerator.level = Boolean(this.currentBlock.level);
+                }
                 this.currentBlock = null;
                 this.pulseGenerator.reset();
-                return data;
+            } else if (this.isBlockTrappable(this.currentBlock)) {
+                const block = this.currentBlock;
+                this.currentBlock = null;
+                this.pulseGenerator.reset();
+                if (block.pause) {
+                    this.pulseGenerator.addSegment(new PauseSegment(Math.min(block.pause, 1500)));
+                }
+                return block.data;
+            } else {
+                return null;
             }
-            return null;
         }
 
         while (true) {
@@ -928,11 +936,17 @@ export class TZXFile {
             const block = this.getNextMeaningfulBlock(true);
             if (!block) return null;
             if (block.type === 'Pause' || block.type === 'SetSignalLevel') {
+                if (block.type === 'SetSignalLevel') {
+                    this.pulseGenerator.level = Boolean(block.level);
+                }
                 continue;
             }
             if (this.isBlockTrappable(block)) {
                 this.currentBlock = null;
                 this.pulseGenerator.reset();
+                if (block.pause) {
+                    this.pulseGenerator.addSegment(new PauseSegment(Math.min(block.pause, 1500)));
+                }
                 return block.data;
             }
             // Next meaningful block requires pulse playback (e.g. PureTone, PureData, DirectRecording, GeneralizedData);
@@ -948,7 +962,7 @@ export class TZXFile {
     }
 
     hasMoreBlocks() {
-        if (this.currentBlock && this.pulseGenerator.hasActiveData()) {
+        if (this.pulseGenerator.hasActiveData()) {
             return true;
         }
         const savedNextBlockIndex = this.nextBlockIndex;
